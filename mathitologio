@@ -1,0 +1,1085 @@
+/************************************************************
+ * Μαθητολόγιο Δομής – ΠΛΗΡΗΣ ΚΩΔΙΚΑΣ (Sheets + PDF Export + Log)
+ * * ΕΚΔΟΣΗ: FINAL (Με Installable Trigger για Logging)
+ ************************************************************/
+
+/************ ΡΥΘΜΙΣΕΙΣ ************/
+const SHEET_NAMES = {
+  ARRIVALS: "Αφίξεις",
+  STUDENTS: "Μαθητές",
+  DELETIONS: "Διαγραφές",
+};
+
+// A–M (13 στήλες) είναι το «πακέτο» που κινείται μεταξύ φύλλων
+const COLS_AM_COUNT = 13; // A–M
+
+// Στη «Μαθητές» υπάρχει επιπλέον Ν = ΣΕΠ → A–N = 14 για τα PDF
+const STUDENTS_TOTAL_COLS = 14; // A–N
+
+const KEY_FIELDS_FOR_NEW_ROW = ["ΔΙΚΑ", "Όνομα", "Επώνυμο"]; // για «Ημ. αφ.»
+
+/* IDs templates και βασικές ρυθμίσεις PDF */
+const EXPORT_CFG = {
+  SHEET_STUDENTS: "Μαθητές",
+
+  TEMPLATE_DOC_ID: "1SlUc0p1_Nk_tGoBAjqAxqTsmcdhgOXir7uHJHjY-9AA",   
+  TEMPLATE_SLIDES_ID: "1Mg6w0iIFre13ksg5E2Aibng7Jymg7LlSZLfDD_qjmBY", 
+  
+  // ΝΕΟ: ID για το συγκεντρωτικό έγγραφο (Αίτηση εγγραφής)
+  TEMPLATE_CONSOLIDATED_ID: "16kxFyrBspi8TSudtN5VefFk1lsKZIlJyyfov7QFf_0U",
+
+  BASE_FOLDER_NAME: "Έγγραφα μαθητών",
+  DATE_FMT: "dd/MM/yyyy",
+};
+
+const CLEAN_DRAFTS = false; // Αν true, σβήνει τα πρόχειρα Doc/Slides μετά την εξαγωγή
+
+/** ID του Google Spreadsheet που θα χρησιμοποιείται ως log */
+const LOG_SPREADSHEET_ID = "1ijv3axRjPxPhgmF1_KuAYqDMaIlEjRYGtqO1eZB60gQ";
+
+/************ ΒΟΗΘΗΤΙΚΑ (Sheets) ************/
+function getHeaderIndexMap(sheet) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+  const map = {};
+  headers.forEach((h, i) => (map[h] = i + 1)); // 1-based
+  return { headers, map };
+}
+function nowDate() { return new Date(); }
+
+function lastDataRowInColsAtoM(sheet) {
+  const startRow = 2, startCol = 1, numCols = COLS_AM_COUNT;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < startRow) return 1;
+  const numRows = lastRow - startRow + 1;
+  const vals = sheet.getRange(startRow, startCol, numRows, numCols).getValues();
+  for (let i = vals.length - 1; i >= 0; i--) {
+    if (vals[i].some(v => v !== "" && v !== null)) return startRow + i;
+  }
+  return 1;
+}
+function firstEmptyRowByAtoM(sheet) { return lastDataRowInColsAtoM(sheet) + 1; }
+function getRowAtoM(sheet, row) { return sheet.getRange(row, 1, 1, COLS_AM_COUNT).getValues()[0]; }
+function writeRowAtoM(sheet, rowIndex, values13) {
+  if (!Array.isArray(values13) || values13.length !== COLS_AM_COUNT) {
+    throw new Error("writeRowAtoM: απαιτούνται ακριβώς 13 τιμές (A–M).");
+  }
+  sheet.getRange(rowIndex, 1, 1, COLS_AM_COUNT).setValues([values13]);
+}
+function rowHasKeyData(rowValues, headerIndexMap) {
+  return KEY_FIELDS_FOR_NEW_ROW.some((name) => {
+    const c = headerIndexMap.map[name];
+    if (!c) return false;
+    const v = rowValues[c - 1];
+    return v !== "" && v !== null;
+  });
+}
+
+/************ LOGGING ΣΕ ΞΕΧΩΡΙΣΤΟ SPREADSHEET ************/
+/**
+ * Καταγράφει ενέργεια στο log spreadsheet.
+ * Απαιτεί Installable Trigger για να λειτουργήσει μέσω onEdit.
+ */
+function logAction_(action, details) {
+  try {
+    if (!LOG_SPREADSHEET_ID) return;
+
+    const logSS = SpreadsheetApp.openById(LOG_SPREADSHEET_ID);
+    let sh = logSS.getSheetByName("Log");
+    if (!sh) {
+      sh = logSS.insertSheet("Log");
+      sh.appendRow(["Ημ/νία-Ώρα", "Χρήστης", "Spreadsheet", "Φύλλο", "Ενέργεια", "Λεπτομέρειες"]);
+    }
+
+    const email = Session.getActiveUser().getEmail() || "Άγνωστος/ανώνυμος";
+    const now = new Date();
+    const stamp = Utilities.formatDate(
+      now,
+      Session.getScriptTimeZone(),
+      "yyyy-MM-dd HH:mm:ss"
+    );
+
+    const activeSS = SpreadsheetApp.getActive();
+    const ssName = activeSS ? activeSS.getName() : "";
+
+    sh.appendRow([
+      stamp,
+      email,
+      ssName,
+      "",              
+      action,
+      details || ""
+    ]);
+  } catch (e) {
+    console.error("Log error:", e);
+  }
+}
+
+function logActionForSheet_(sheetName, action, details) {
+  try {
+    if (!LOG_SPREADSHEET_ID) return;
+
+    const logSS = SpreadsheetApp.openById(LOG_SPREADSHEET_ID);
+    let sh = logSS.getSheetByName("Log");
+    if (!sh) {
+      sh = logSS.insertSheet("Log");
+      sh.appendRow(["Ημ/νία-Ώρα", "Χρήστης", "Spreadsheet", "Φύλλο", "Ενέργεια", "Λεπτομέρειες"]);
+    }
+
+    const email = Session.getActiveUser().getEmail() || "Άγνωστος/ανώνυμος";
+    const now = new Date();
+    const stamp = Utilities.formatDate(
+      now,
+      Session.getScriptTimeZone(),
+      "yyyy-MM-dd HH:mm:ss"
+    );
+
+    const activeSS = SpreadsheetApp.getActive();
+    const ssName = activeSS ? activeSS.getName() : "";
+
+    sh.appendRow([
+      stamp,
+      email,
+      ssName,
+      sheetName || "",
+      action,
+      details || ""
+    ]);
+  } catch (e) {
+    console.error("Log error:", e);
+  }
+}
+
+/************ ΚΑΤΑΝΟΜΗ ΣΕ ΣΧΟΛΕΙΟ ΓΙΑ 2025–2026 ************/
+function placementByBirthYear_2025_26_(year) {
+  const map = {
+    2021: { grade: "Προνήπιο",           type: "Νηπιαγωγείο" },
+    2020: { grade: "Νήπιο",              type: "Νηπιαγωγείο" },
+    2019: { grade: "Α' Δημοτικού",       type: "ΔΣ Νέας Αμισού"    },
+    2018: { grade: "Β' Δημοτικού",       type: "ΔΣ Νέας Αμισού"    },
+    2017: { grade: "Γ' Δημοτικού",       type: "ΔΣ Νέας Αμισού"    },
+    2016: { grade: "Δ' Δημοτικού",       type: "ΔΣ Νέας Αμισού"    },
+    2015: { grade: "Ε' Δημοτικού",       type: "ΔΣ Νέας Αμισού"    },
+    2014: { grade: "Στ'Δημοτικού",       type: "ΔΣ Νέας Αμισού"    },
+    2013: { grade: "Α' Γυμνασίου",       type: "2ο Γυμνάσιο"    },
+    2012: { grade: "Β' Γυμνασίου",       type: "2ο Γυμνάσιο"    },
+    2011: { grade: "Γ' Γυμνασίου",       type: "2ο Γυμνάσιο"    },
+    2010: { grade: "Α' Λυκείου",         type: "2ο ΕΠΑΛ" },
+    2009: { grade: "Β' Λυκείου",         type: "2ο ΕΠΑΛ" },
+    2008: { grade: "Γ' Λυκείου",         type: "2ο ΕΠΑΛ" },
+    2007: { grade: "Γ' Λυκείου",         type: "2ο ΕΠΑΛ" },
+  };
+  return map[year] || null;
+}
+
+function getBirthYearFromCellValue_(val) {
+  if (!val) return null;
+  if (val instanceof Date) return val.getFullYear();
+  
+  if (typeof val === "number") {
+    const base = new Date(1899, 11, 30);
+    const d = new Date(base.getTime() + val * 24 * 60 * 60 * 1000);
+    if (!isNaN(d)) return d.getFullYear();
+    return null;
+  }
+
+  if (typeof val === "string") {
+    const s = val.trim();
+    // dd/MM/yyyy
+    let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) {
+      const day = parseInt(m[1], 10);
+      const month = parseInt(m[2], 10) - 1;
+      const year = parseInt(m[3], 10);
+      const d = new Date(year, month, day);
+      if (!isNaN(d)) return d.getFullYear();
+    }
+    // yyyy-MM-dd
+    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) {
+      const year = parseInt(m[1], 10);
+      const month = parseInt(m[2], 10) - 1;
+      const day = parseInt(m[3], 10);
+      const d = new Date(year, month, day);
+      if (!isNaN(d)) return d.getFullYear();
+    }
+  }
+  return null;
+}
+
+function updateSchoolForArrivalsRow_(sheet, row, arrivalsHI) {
+  const colBirth  = arrivalsHI.map["Ημ. γέν."] || 10; // J
+  const colSchool = arrivalsHI.map["Σχολείο"] || 12;  // L
+
+  const val = sheet.getRange(row, colBirth).getValue();
+  const year = getBirthYearFromCellValue_(val);
+  if (!year) return;
+
+  const place = placementByBirthYear_2025_26_(year);
+  const text = place ? place.type : ""; 
+
+  const cur = String(sheet.getRange(row, colSchool).getDisplayValue() || "");
+  if (cur !== text) {
+    sheet.getRange(row, colSchool).setValue(text);
+    logActionForSheet_(
+      sheet.getName(),
+      "Αυτόματη συμπλήρωση «Σχολείο»",
+      `Γραμμή: ${row} | Έτος γέννησης: ${year} | Τύπος σχολείου: ${text}`
+    );
+  }
+}
+
+function recalcAllArrivalsSchool_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(SHEET_NAMES.ARRIVALS);
+  if (!sh) {
+    logAction_("Σφάλμα recalcAllArrivalsSchool_", "Δεν βρέθηκε φύλλο «Αφίξεις».");
+    return;
+  }
+
+  const hi = getHeaderIndexMap(sh);
+  const last = sh.getLastRow();
+  if (last < 2) {
+    logActionForSheet_("Αφίξεις", "recalcAllArrivalsSchool_", "Δεν υπάρχουν δεδομένα.");
+    return;
+  }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(5000)) return;
+
+  try {
+    for (let row = 2; row <= last; row++) {
+      updateSchoolForArrivalsRow_(sh, row, hi);
+    }
+    logActionForSheet_("Αφίξεις", "recalcAllArrivalsSchool_", `Έγινε επανυπολογισμός για ${last - 1} γραμμές.`);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu("Έκδοση")
+    .addItem('PDF για επιλεγμένες γραμμές (στην "Μαθητές")', "makePdfsForSelectedRows")
+    .addSeparator()
+    .addItem('Υπολόγισε «Σχολείο» (Αφίξεις) για όλες τις γραμμές', "recalcAllArrivalsSchool_")
+    .addSeparator()
+    .addItem('Μαζική Διαγραφή/Μετακίνηση (βάσει λίστας ΔΙΚΑ)', "bulkSmartDelete_") // ΝΕΟ ΟΝΟΜΑ
+    .addToUi();
+}
+
+/************ TRIGGERED EDIT FUNCTION ************/
+/**
+ * ΠΡΟΣΟΧΗ: Αυτή η συνάρτηση αντικαθιστά την `onEdit`.
+ * Πρέπει να ρυθμιστεί ως INSTALLABLE TRIGGER:
+ * 1. Πηγαίνετε "Triggers" (το εικονίδιο ρολογιού αριστερά).
+ * 2. Πατήστε "+ Add Trigger".
+ * 3. Επιλέξτε συνάρτηση: "onManagerEdit".
+ * 4. Select event type: "On edit".
+ * 5. Save (θα ζητήσει άδεια).
+ */
+function onManagerEdit(e) {
+  try {
+    if (!e || !e.range || !e.source) return;
+
+    const ss = e.source;
+    const sheet = e.range.getSheet();
+    const sheetName = sheet.getName();
+    const r = e.range;
+    const numRows = r.getNumRows();
+
+    const arrivalsSheet = ss.getSheetByName(SHEET_NAMES.ARRIVALS);
+    const studentsSheet = ss.getSheetByName(SHEET_NAMES.STUDENTS);
+    const deletionsSheet = ss.getSheetByName(SHEET_NAMES.DELETIONS);
+    if (!arrivalsSheet || !studentsSheet || !deletionsSheet) return;
+
+    const arrivalsHI  = getHeaderIndexMap(arrivalsSheet);
+    const studentsHI  = getHeaderIndexMap(studentsSheet);
+    const deletionsHI = getHeaderIndexMap(deletionsSheet);
+
+    /******** 1) ΑΦΙΞΕΙΣ ********/
+    if (sheetName === SHEET_NAMES.ARRIVALS) {
+      const dateCol = arrivalsHI.map["Ημ. αφ."]; // K
+      const startRow = r.getRow();
+      const data = sheet
+        .getRange(startRow, 1, numRows, Math.max(COLS_AM_COUNT, sheet.getLastColumn()))
+        .getValues();
+      const now = nowDate();
+
+      // 1α) Αυτόματη «Ημ. αφ.»
+      if (dateCol) {
+        for (let i = 0; i < numRows; i++) {
+          const rowIdx = startRow + i;
+          if (rowIdx === 1) continue; 
+
+          const rowVals = data[i];
+          const hasCoreData = rowHasKeyData(rowVals, arrivalsHI);
+          const dateVal = rowVals[dateCol - 1];
+
+          if (hasCoreData && (dateVal === "" || dateVal === null)) {
+            sheet.getRange(rowIdx, dateCol).setValue(now);
+            logActionForSheet_(sheetName,"Αυτόματη συμπλήρωση «Ημ. αφ.»", `Γραμμή: ${rowIdx}`);
+          }
+        }
+      }
+
+      // 1β) Αυτόματο «Σχολείο»
+      for (let i = 0; i < numRows; i++) {
+        const rowIdx = startRow + i;
+        if (rowIdx === 1) continue;
+        updateSchoolForArrivalsRow_(sheet, rowIdx, arrivalsHI);
+      }
+
+      // 1γ) Καταχώριση → ΜΑΘΗΤΕΣ
+      const submitCol = arrivalsHI.map["Καταχώριση"]; // N
+      if (submitCol && r.getColumn() === submitCol && numRows === 1 && r.getValue() === true) {
+        const lock = LockService.getDocumentLock();
+        if (!lock.tryLock(5000)) {
+          logActionForSheet_(sheetName, "Αδυναμία κλειδώματος", "Lock timeout");
+          return;
+        }
+        try {
+          const row = r.getRow();
+          if (row !== 1) {
+            const srcAtoM = getRowAtoM(sheet, row);
+
+            // Έλεγχος διπλού ΔΙΚΑ στη «Μαθητές» πριν την αντιγραφή
+            let isDuplicateInStudents = false;
+            let currentDika = "";
+            try {
+              const dikaColArrivals = arrivalsHI.map["ΔΙΚΑ"];
+              const dikaColStudents = studentsHI.map["ΔΙΚΑ"];
+              if (dikaColArrivals && dikaColStudents) {
+                currentDika = String(sheet.getRange(row, dikaColArrivals).getValue() || "").trim();
+                if (currentDika !== "" && studentsSheet.getLastRow() >= 2) {
+                  const rows = Math.max(0, studentsSheet.getLastRow() - 1);
+                  if (rows > 0) {
+                    const countInStudents = studentsSheet
+                      .getRange(2, dikaColStudents, rows, 1)
+                      .getValues()
+                      .map(v => String(v[0] || "").trim())
+                      .filter(v => v === currentDika).length;
+                    isDuplicateInStudents = countInStudents > 0;
+                  }
+                }
+              }
+            } catch (dupErr) {
+              console.error(dupErr);
+            }
+
+            if (isDuplicateInStudents) {
+              SpreadsheetApp.getActive().toast(
+                "Το ΔΙΚΑ υπάρχει ήδη στη «Μαθητές». Η εγγραφή ΔΕΝ μεταφέρθηκε.",
+                "Σφάλμα", 6
+              );
+              r.setValue(false); // Ξε-τικάρισμα
+              logActionForSheet_(sheetName, "Απόρριψη Καταχώρισης (διπλό ΔΙΚΑ)", `ΔΙΚΑ: ${currentDika}`);
+            } else {
+              const destAtoM = srcAtoM.slice();
+              destAtoM[10] = nowDate(); // Κ = «Ημ. εγγρ.»
+              const targetRow = firstEmptyRowByAtoM(studentsSheet);
+              writeRowAtoM(studentsSheet, targetRow, destAtoM);
+              
+              SpreadsheetApp.getActive().toast("Ο μαθητής αντιγράφηκε στη «Μαθητές».", "Επιτυχία", 3);
+              
+              // Προαιρετικά: Διαγραφή από Αφίξεις ή μαρκάρισμα; 
+              // Εδώ το αφήνουμε, αλλά αφαιρούμε το τικ για να μην ξαναπατηθεί κατά λάθος;
+              r.setValue(false); 
+
+              logActionForSheet_(sheetName, "Καταχώριση μαθητή", `Μεταφορά στη "Μαθητές" | ΔΙΚΑ: ${currentDika}`);
+            }
+          }
+        } finally {
+          lock.releaseLock();
+        }
+      }
+
+      // 1δ) Έλεγχος Live Διπλοεγγραφής
+      const dikaCol = arrivalsHI.map["ΔΙΚΑ"];
+      if (dikaCol && r.getColumn() === dikaCol && r.getValue()) {
+        const currentDika = String(r.getValue()).trim();
+        if (currentDika !== "") {
+          const allVals = [];
+          // Συλλογή από όλα τα φύλλα...
+          [arrivalsSheet, studentsSheet, deletionsSheet].forEach(s => {
+             const hi = getHeaderIndexMap(s);
+             const dc = hi.map["ΔΙΚΑ"];
+             const lr = s.getLastRow();
+             if (dc && lr >= 2) {
+               allVals.push(...s.getRange(2, dc, lr-1, 1).getValues().flat().map(String).map(x=>x.trim()));
+             }
+          });
+
+          const count = allVals.filter(v => v === currentDika).length;
+          if (count > 1) {
+            r.setBackground("#ffcccc");
+            SpreadsheetApp.getUi().alert(`⚠️ Το ΔΙΚΑ "${currentDika}" υπάρχει ήδη ${count} φορές στο σύστημα!`);
+            logActionForSheet_(sheetName, "Προειδοποίηση διπλού ΔΙΚΑ", `ΔΙΚΑ: ${currentDika} | Πλήθος: ${count}`);
+          } else {
+            r.setBackground(null);
+          }
+        }
+      }
+    } 
+
+    /******** 2) ΜΑΘΗΤΕΣ: Διαγραφή → «Διαγραφές» ********/
+    if (sheetName === SHEET_NAMES.STUDENTS) {
+      const deleteCol = studentsHI.map["Διαγραφή"];
+      if (deleteCol && r.getColumn() === deleteCol && numRows === 1 && r.getValue() === true) {
+        const lock = LockService.getDocumentLock();
+        if (!lock.tryLock(5000)) return;
+        try {
+          const row = r.getRow();
+          if (row !== 1) {
+            const srcAtoM = getRowAtoM(sheet, row); 
+            const destAtoM = srcAtoM.slice();
+            destAtoM[10] = nowDate(); // Κ = «Ημ. διαγ.»
+            const targetRow = firstEmptyRowByAtoM(deletionsSheet);
+            writeRowAtoM(deletionsSheet, targetRow, destAtoM);
+
+            const dikaVal = srcAtoM[1] || "";
+            const nameVal = `${srcAtoM[3]} ${srcAtoM[2]}`;
+
+            sheet.deleteRow(row);
+            SpreadsheetApp.getActive().toast("Ο μαθητής μετακινήθηκε στις «Διαγραφές».", "Διαγραφή", 3);
+            logActionForSheet_(sheetName, "Διαγραφή μαθητή", `ΔΙΚΑ: ${dikaVal} | ${nameVal}`);
+          }
+        } finally {
+          lock.releaseLock();
+        }
+      }
+    }
+
+    /******** 3) ΔΙΑΓΡΑΦΕΣ: Επαναφορά → «Μαθητές» ********/
+    if (sheetName === SHEET_NAMES.DELETIONS) {
+      const restoreCol = deletionsHI.map["Επαναφορά"];
+      if (restoreCol && r.getColumn() === restoreCol && numRows === 1 && r.getValue() === true) {
+        const lock = LockService.getDocumentLock();
+        if (!lock.tryLock(5000)) return;
+        try {
+          const row = r.getRow();
+          if (row !== 1) {
+            const srcAtoM = getRowAtoM(sheet, row);
+            const destAtoM = srcAtoM.slice();
+            destAtoM[10] = nowDate(); // Κ = «Ημ. εγγρ.»
+            const targetRow = firstEmptyRowByAtoM(studentsSheet);
+            writeRowAtoM(studentsSheet, targetRow, destAtoM);
+
+            const dikaVal = srcAtoM[1] || "";
+            const nameVal = `${srcAtoM[3]} ${srcAtoM[2]}`;
+
+            sheet.deleteRow(row);
+            SpreadsheetApp.getActive().toast("Ο μαθητής επανήλθε στη «Μαθητές».", "Επαναφορά", 3);
+            logActionForSheet_(sheetName, "Επαναφορά μαθητή", `ΔΙΚΑ: ${dikaVal} | ${nameVal}`);
+          }
+        } finally {
+          lock.releaseLock();
+        }
+      }
+    }
+
+  } catch (err) {
+    console.error(err);
+    logAction_("Σφάλμα onManagerEdit", String(err));
+  }
+}
+
+/* =======================  ΕΝΙΑΙΑ ΕΚΔΟΣΗ PDF  ======================= */
+
+function makePdfsForSelectedRows() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(EXPORT_CFG.SHEET_STUDENTS);
+  if (!sh) {
+    logAction_("Σφάλμα PDF", "Λείπει το φύλλο 'Μαθητές'");
+    return;
+  }
+
+  const active = ss.getActiveRangeList();
+  if (!active) {
+    SpreadsheetApp.getUi().alert("Παρακαλώ επιλέξτε κελιά ή γραμμές στη «Μαθητές».");
+    return;
+  }
+
+  const ranges = active.getRanges().filter(r => r.getSheet().getName() === EXPORT_CFG.SHEET_STUDENTS);
+  const rowsSet = new Set();
+  ranges.forEach(r => {
+    const start = Math.max(2, r.getRow());
+    const end = r.getLastRow();
+    for (let row = start; row <= end; row++) rowsSet.add(row);
+  });
+
+  if (rowsSet.size === 0) {
+    SpreadsheetApp.getActive().toast("Δεν επιλέχθηκαν έγκυρες γραμμές.", "Άκυρο", 3);
+    return;
+  }
+
+  const rows = Array.from(rowsSet).sort((a, b) => a - b);
+  let ok = 0, fail = 0;
+  const errors = [];
+  
+  // Λίστα για το συγκεντρωτικό PDF
+  const consolidatedData = [];
+
+  SpreadsheetApp.getActive().toast("Δημιουργία PDF...", "Εκτέλεση", 10);
+
+  rows.forEach(row => {
+    try {
+      // 1. Δημιουργία ατομικών PDF (όπως πριν)
+      const studentData = makeAllPdfsForRow_(sh, row);
+      
+      // 2. Αν πετύχει, αποθήκευση στοιχείων για το συγκεντρωτικό
+      if (studentData) {
+        consolidatedData.push(studentData);
+      }
+      
+      ok++;
+      Utilities.sleep(250); 
+    } catch (e) {
+      fail++;
+      errors.push(`Γραμμή ${row}: ${e.message || e}`);
+    }
+  });
+
+  // 3. Δημιουργία Συγκεντρωτικού PDF (αν υπήρξαν επιτυχίες)
+  if (consolidatedData.length > 0) {
+    try {
+      createConsolidatedPdf_(consolidatedData);
+    } catch (e) {
+      errors.push("Συγκεντρωτικό PDF: " + e.message);
+      logAction_("Σφάλμα Συγκεντρωτικού", e.message);
+    }
+  }
+
+  logAction_("PDF Export Batch", `Επιτυχίες: ${ok}, Αποτυχίες: ${fail}`);
+  
+  if (fail > 0 || errors.length > 0) {
+    SpreadsheetApp.getUi().alert(`Ολοκληρώθηκε με παρατηρήσεις.\nOK: ${ok}\nFail: ${fail}\n\n${errors.slice(0,10).join("\n")}`);
+  } else {
+    SpreadsheetApp.getActive().toast(`Επιτυχής δημιουργία ${ok} PDF + Συγκεντρωτικού.`, "Ολοκληρώθηκε", 4);
+  }
+}
+
+function makeAllPdfsForRow_(sh, row) {
+  if (row <= 1) return null;
+  const v = sh.getRange(row, 1, 1, STUDENTS_TOTAL_COLS).getValues()[0];
+
+  // Έλεγχος αν υπάρχει όνομα/επώνυμο
+  if (!v[2] && !v[3]) return null; 
+
+  const [unit, dika, first, last, patronymic, matronymic, gender, language, nationality] = v;
+  const birthDateRaw = v[9];
+  const birthDate  = formatDateGeneric_(birthDateRaw, EXPORT_CFG.DATE_FMT);
+  const enrollDate = formatDateGeneric_(v[10], EXPORT_CFG.DATE_FMT);
+  const school     = String(v[11] || "");
+  const guardian   = String(v[12] || "");
+  const sep        = String(v[13] || "");
+
+  const baseFolder = getOrCreateFolderByName_(EXPORT_CFG.BASE_FOLDER_NAME);
+  const sepFolder = getOrCreateChildFolder_(baseFolder, sep ? sanitizeNameForFolder_(sep) : "Χωρίς ΣΕΠ");
+  const studentFolder = getOrCreateChildFolder_(sepFolder, buildStudentFolderName_(first, last, dika));
+
+  const dataSlides = {
+    "{{Μονάδα}}": String(unit||""),
+    "{{ΔΙΚΑ}}": String(dika||""),
+    "{{Όνομα}}": String(first||""),
+    "{{Επώνυμο}}": String(last||""),
+    "{{Πατρώνυμο}}": String(patronymic||""),
+    "{{Μητρώνυμο}}": String(matronymic||""),
+    "{{Φύλο}}": String(gender||""),
+    "{{Γλώσσα}}": String(language||""),
+    "{{Ιθαγένεια}}": String(nationality||""),
+    "{{ΗμΓεν}}": birthDate,
+    "{{ΗμΕγγρ}}": enrollDate,
+    "{{Σχολείο}}": school,
+    "{{Επίτροπος}}": guardian,
+    "{{ΣΕΠ}}": sep,
+  };
+
+  const dataDoc = Object.assign({}, dataSlides, {
+    "{{Όνομα}}": `${transliterateToGreek_(first)} (${first})`,
+    "{{Επώνυμο}}": `${transliterateToGreek_(last)} (${last})`,
+  });
+
+  // Doc Gen
+  retry_(() => generatePdfFromDocTemplate_IN_FOLDER_(EXPORT_CFG.TEMPLATE_DOC_ID, dataDoc, studentFolder, buildDocFilename_(first, last, dika)));
+  
+  // Slides Gen
+  retry_(() => generatePdfFromSlidesTemplate_IN_FOLDER_(EXPORT_CFG.TEMPLATE_SLIDES_ID, dataSlides, studentFolder, buildSlidesFilename_(first, last, dika)));
+
+  logActionForSheet_(EXPORT_CFG.SHEET_STUDENTS, "PDF Created", `ΔΙΚΑ: ${dika}`);
+
+  // ΕΠΙΣΤΡΟΦΗ δεδομένων για το συγκεντρωτικό
+  return {
+    dika: String(dika||""),
+    name: String(first||""),
+    surname: String(last||""),
+    birthDate: birthDate,
+    school: school // Το χρειάζόμαστε για το {{Σχολείο}} στην αίτηση
+  };
+}
+
+function transliterateToGreek_(raw) {
+  let s = String(raw || "").trim().replace(/\s+/g, " ");
+  if (!s) return "";
+  const lower = s.toLowerCase();
+
+  const dict = {
+    "muhammad":"ΜΟΧΑΜΕΝΤ","mohammad":"ΜΟΧΑΜΕΝΤ","mohamed":"ΜΟΧΑΜΕΝΤ",
+    "muhammed":"ΜΟΧΑΜΕΝΤ","mohammed":"ΜΟΧΑΜΕΝΤ",
+    "ahmed":"ΑΧΜΕΤ","ahmad":"ΑΧΜΑΝΤ",
+    "mehmet":"ΜΕΧΜΕΤ","mustafa":"ΜΟΥΣΤΑΦΑ",
+    "ibrahim":"ΙΜΠΡΑΗΜ","youssef":"ΓΙΟΥΣΕΦ","yusuf":"ΓΙΟΥΣΟΥΦ",
+    "omar":"ΟΜΑΡ","ali":"ΑΛΙ","hassan":"ΧΑΣΑΝ","hasan":"ΧΑΣΑΝ",
+    "hussein":"ΧΟΥΣΕΪΝ","hussain":"ΧΟΥΣΕΪΝ",
+    "khaled":"ΧΑΛΕΝΤ","khalid":"ΧΑΛΙΝΤ",
+    "karim":"ΚΑΡΙΜ","samir":"ΣΑΜΙΡ","bilal":"ΜΠΙΛΑΛ",
+    "suleiman":"ΣΟΥΛΕΪΜΑΝ","suleyman":"ΣΟΥΛΕΪΜΑΝ",
+    "fatima":"ΦΑΤΙΜΑ","aisha":"ΑΪΣΑ","zainab":"ΖΕΪΝΑΜΠ",
+    "ayman":"ΑΪΜΑΝ","saida":"ΣΑΪΝΤΑ","abdullah":"ΑΜΠΝΤΟΥΛΑΧ",
+    "abdallah":"ΑΜΠΝΤΑΛΑ","can":"ΤΖΑΝ",
+    "yilmaz":"ΓΙΛΜΑΖ","celik":"ΤΣΕΛΙΚ","demir":"ΝΤΕΜΙΡ"
+  };
+  if (dict[lower]) return dict[lower];
+
+  let t = lower.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  t = t.replace(/kh/g,"χ").replace(/gh/g,"γ").replace(/th/g,"θ")
+       .replace(/sh/g,"σ").replace(/ch/g,"χ").replace(/ph/g,"φ")
+       .replace(/dj/g,"τζ").replace(/zh/g,"ζ").replace(/ts/g,"τσ");
+
+  t = t.replace(/b/g,"μπ").replace(/d/g,"ντ").replace(/j/g,"τζ")
+       .replace(/v/g,"β").replace(/w/g,"ου").replace(/q/g,"κ")
+       .replace(/x/g,"ξ").replace(/y/g,"ι")
+       .replace(/a/g,"α").replace(/e/g,"ε").replace(/i/g,"ι")
+       .replace(/o/g,"ο").replace(/u/g,"ου")
+       .replace(/c/g,"κ").replace(/k/g,"κ").replace(/l/g,"λ")
+       .replace(/m/g,"μ").replace(/n/g,"ν").replace(/p/g,"π")
+       .replace(/r/g,"ρ").replace(/s/g,"σ").replace(/t/g,"τ")
+       .replace(/f/g,"φ").replace(/g/g,"γ");
+
+  return t.toUpperCase().trim();
+}
+
+/************ Βοηθητικά (PDF/Drive) ************/
+function formatDateGeneric_(value, fmt) {
+  if (!value) return "";
+  try {
+    const d = (value instanceof Date) ? value : new Date(value);
+    if (isNaN(d)) return String(value);
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), fmt || "dd/MM/yyyy");
+  } catch (e) {
+    return String(value);
+  }
+}
+function sanitizeNameForFolder_(s) {
+  return String(s || "").replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+}
+function buildStudentFolderName_(first, last, dika) {
+  const namePart = sanitizeNameForFolder_(([last, first].filter(Boolean).join(" ")));
+  const dikaPart = sanitizeNameForFolder_(dika);
+  return (namePart && dikaPart) ? `${namePart} - ${dikaPart}` : (namePart || dikaPart || "Χωρίς Στοιχεία");
+}
+function buildDocFilename_(first, last, dika) {
+  return `Έγγραφο - ${last} ${first} - ${dika}`.trim();
+}
+function buildSlidesFilename_(first, last, dika) {
+  return `Έντυπο - ${last} ${first} - ${dika}`.trim();
+}
+function getOrCreateFolderByName_(name) {
+  const n = sanitizeNameForFolder_(name);
+  const it = DriveApp.getFoldersByName(n);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(n);
+}
+function getOrCreateChildFolder_(parentFolder, childName) {
+  const n = sanitizeNameForFolder_(childName);
+  const it = parentFolder.getFoldersByName(n);
+  return it.hasNext() ? it.next() : parentFolder.createFolder(n);
+}
+
+function generatePdfFromDocTemplate_IN_FOLDER_(templateId, placeholders, targetFolder, baseName) {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const templateFile = DriveApp.getFileById(templateId);
+    const draftFile = templateFile.makeCopy(baseName + " (temp)", targetFolder);
+    const doc = DocumentApp.openById(draftFile.getId());
+    const body = doc.getBody();
+    
+    // Header/Footer handling skipped for brevity if not strictly needed, 
+    // usually Body is enough. Add if needed.
+
+    Object.keys(placeholders).forEach(ph => {
+      body.replaceText(ph.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), String(placeholders[ph]||""));
+    });
+    doc.saveAndClose();
+
+    const pdfBlob = draftFile.getAs(MimeType.PDF);
+    targetFolder.createFile(pdfBlob).setName(baseName + " (Doc).pdf");
+    if (CLEAN_DRAFTS) draftFile.setTrashed(true);
+  } catch (err) {
+    throw new Error("Doc PDF: " + err.message);
+  }
+}
+
+function generatePdfFromSlidesTemplate_IN_FOLDER_(templateId, placeholders, targetFolder, baseName) {
+  try {
+    const templateFile = DriveApp.getFileById(templateId);
+    const draftFile = templateFile.makeCopy(baseName + " (temp)", targetFolder);
+    const pres = SlidesApp.openById(draftFile.getId());
+    
+    Object.keys(placeholders).forEach(ph => {
+      pres.replaceAllText(ph, String(placeholders[ph]||""));
+    });
+    pres.saveAndClose();
+
+    const pdfBlob = draftFile.getAs(MimeType.PDF);
+    targetFolder.createFile(pdfBlob).setName(baseName + " (Slides).pdf");
+    if (CLEAN_DRAFTS) draftFile.setTrashed(true);
+  } catch (err) {
+    throw new Error("Slides PDF: " + err.message);
+  }
+}
+
+function retry_(fn, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    try { return fn(); }
+    catch (e) { 
+      if (i === attempts - 1) throw e;
+      Utilities.sleep(1000 * Math.pow(2, i)); 
+    }
+  }
+}
+/* =======================  ΜΑΖΙΚΗ ΔΙΑΓΡΑΦΗ ΑΦΙΞΕΩΝ  ======================= */
+
+/* =======================  ΕΞΥΠΝΗ ΜΑΖΙΚΗ ΔΙΑΓΡΑΦΗ  ======================= */
+
+/**
+ * Διαγράφει μαζικά βάσει λίστας ΔΙΚΑ.
+ * - Στις "Αφίξεις": Οριστική διαγραφή.
+ * - Στους "Μαθητές": Μετακίνηση στις "Διαγραφές" (για ιστορικό).
+ */
+function bulkSmartDelete_() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ss.getActiveSheet(); // Παίρνουμε το ενεργό φύλλο
+  const sheetName = sheet.getName();
+
+  // Έλεγχος: Λειτουργεί μόνο σε Αφίξεις και Μαθητές
+  if (sheetName !== SHEET_NAMES.ARRIVALS && sheetName !== SHEET_NAMES.STUDENTS) {
+    ui.alert("Η λειτουργία αυτή είναι διαθέσιμη μόνο στις καρτέλες «Αφίξεις» και «Μαθητές».");
+    return;
+  }
+
+  // 1. Εισαγωγή ΔΙΚΑ
+  const result = ui.prompt(
+    `Μαζική Επεξεργασία (${sheetName})`,
+    "Επικολλήστε τα ΔΙΚΑ χωρισμένα με κόμμα (π.χ. 1001, 1005, 1200):",
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (result.getSelectedButton() !== ui.Button.OK) return;
+
+  const text = result.getResponseText();
+  if (!text.trim()) {
+    ui.alert("Δεν δώσατε κανένα ΔΙΚΑ.");
+    return;
+  }
+
+  const dikaToDelete = text.split(",").map(s => s.trim()).filter(s => s !== "");
+  if (dikaToDelete.length === 0) return;
+
+  // 2. Εντοπισμός στήλης ΔΙΚΑ
+  const hi = getHeaderIndexMap(sheet);
+  const dikaColIdx = hi.map["ΔΙΚΑ"];
+  
+  if (!dikaColIdx) {
+    ui.alert("Σφάλμα: Δεν βρέθηκε στήλη «ΔΙΚΑ».");
+    return;
+  }
+
+  // 3. Σάρωση
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert("Δεν υπάρχουν δεδομένα.");
+    return;
+  }
+
+  const dikaValues = sheet.getRange(2, dikaColIdx, lastRow - 1, 1).getValues().flat().map(String);
+  
+  // Βρίσκουμε τις γραμμές (indices)
+  const rowsProcess = []; // { rowIndex, dika }
+  
+  for (let i = 0; i < dikaValues.length; i++) {
+    const currentDika = dikaValues[i].trim();
+    if (dikaToDelete.includes(currentDika)) {
+      rowsProcess.push({
+        rowIndex: i + 2, // +2 λόγω header και 0-based array
+        dika: currentDika
+      });
+    }
+  }
+
+  if (rowsProcess.length === 0) {
+    ui.alert("Δεν βρέθηκαν αυτά τα ΔΙΚΑ στο τρέχον φύλλο.");
+    return;
+  }
+
+  // 4. Μήνυμα Επιβεβαίωσης ανάλογα με το φύλλο
+  let msg = "";
+  if (sheetName === SHEET_NAMES.ARRIVALS) {
+    msg = `ΠΡΟΣΟΧΗ: Θα διαγραφούν ΟΡΙΣΤΙΚΑ ${rowsProcess.length} εγγραφές από τις Αφίξεις.`;
+  } else {
+    msg = `Θα μετακινηθούν ${rowsProcess.length} μαθητές στις «Διαγραφές».`;
+  }
+
+  const confirm = ui.alert("Επιβεβαίωση", `${msg}\n\nΕίστε σίγουροι;`, ui.ButtonSet.YES_NO);
+  if (confirm !== ui.Button.YES) return;
+
+  // 5. Εκτέλεση (Από κάτω προς τα πάνω)
+  rowsProcess.sort((a, b) => b.rowIndex - a.rowIndex);
+  
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) return;
+
+  try {
+    // Αν είμαστε στους Μαθητές, χρειαζόμαστε πρόσβαση στο φύλλο Διαγραφές
+    let deletionsSheet = null;
+    if (sheetName === SHEET_NAMES.STUDENTS) {
+      deletionsSheet = ss.getSheetByName(SHEET_NAMES.DELETIONS);
+      if (!deletionsSheet) throw new Error("Δεν βρέθηκε το φύλλο «Διαγραφές».");
+    }
+
+    let count = 0;
+
+    rowsProcess.forEach(item => {
+      const row = item.rowIndex;
+
+      if (sheetName === SHEET_NAMES.STUDENTS) {
+        // --- Λογική ΜΑΘΗΤΕΣ: Μετακίνηση ---
+        const srcAtoM = getRowAtoM(sheet, row);
+        const destAtoM = srcAtoM.slice();
+        destAtoM[10] = new Date(); // Κ = «Ημ. διαγ.» (τρέχουσα ημερομηνία)
+        
+        const targetRow = firstEmptyRowByAtoM(deletionsSheet);
+        writeRowAtoM(deletionsSheet, targetRow, destAtoM);
+        
+        // Διαγραφή από Μαθητές
+        sheet.deleteRow(row);
+      
+      } else {
+        // --- Λογική ΑΦΙΞΕΙΣ: Απλή Διαγραφή ---
+        sheet.deleteRow(row);
+      }
+      count++;
+    });
+
+    ss.toast(`Επεξεργάστηκαν ${count} εγγραφές.`, "Ολοκληρώθηκε", 5);
+    
+    logActionForSheet_(
+      sheetName,
+      sheetName === SHEET_NAMES.STUDENTS ? "Μαζική Μετακίνηση (Διαγραφή)" : "Μαζική Διαγραφή",
+      `Πλήθος: ${count} | ΔΙΚΑ: ${rowsProcess.map(r => r.dika).join(", ")}`
+    );
+
+  } catch (e) {
+    console.error(e);
+    ui.alert("Σφάλμα: " + e.message);
+  } finally {
+    lock.releaseLock();
+  }
+}
+/**
+ * Δημιουργεί το συγκεντρωτικό PDF (Αίτηση) με τον πίνακα των μαθητών.
+ * VERSION 3: Λογική "Fill & Adjust" για μέγιστη σταθερότητα πίνακα.
+ */
+function createConsolidatedPdf_(studentsList) {
+  if (!studentsList || studentsList.length === 0) return;
+
+  const baseFolder = getOrCreateFolderByName_(EXPORT_CFG.BASE_FOLDER_NAME);
+  const refSchool = studentsList[0].school || "";
+  
+  const nowStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd_HHmm");
+  const fileName = `Συγκεντρωτική Αίτηση - ${nowStr}`;
+
+  let draftFile; // Δηλώνουμε τη μεταβλητή έξω για να είναι προσβάσιμη στο catch
+
+  try {
+    const templateFile = DriveApp.getFileById(EXPORT_CFG.TEMPLATE_CONSOLIDATED_ID);
+    draftFile = templateFile.makeCopy(fileName + " (temp)", baseFolder);
+    const doc = DocumentApp.openById(draftFile.getId());
+    const body = doc.getBody();
+
+    // 1. Αντικατάσταση placeholders κειμένου
+    body.replaceText("{{Σχολείο}}", refSchool);
+    const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
+    body.replaceText("{{Date}}", today); 
+
+    // 2. Εντοπισμός Πίνακα
+    const tables = body.getTables();
+    let targetTable = null;
+
+    // Ψάχνουμε τον πίνακα βάσει επικεφαλίδας
+    for (let t = 0; t < tables.length; t++) {
+      if (tables[t].getNumRows() > 0) {
+        const headerText = tables[t].getRow(0).getText();
+        if (headerText.includes("ΕΠΩΝΥΜΟ") || headerText.includes("ΔΙΚΑ") || headerText.includes("ΟΝΟΜΑ")) {
+          targetTable = tables[t];
+          break;
+        }
+      }
+    }
+    // Fallback στον τελευταίο πίνακα αν δεν βρεθεί
+    if (!targetTable && tables.length > 0) targetTable = tables[tables.length - 1];
+
+    if (targetTable) {
+      // --- ΝΕΑ ΛΟΓΙΚΗ: FILL AND ADJUST ---
+      
+      const studentsCount = studentsList.length;
+      // Υποθέτουμε ότι η Row 0 είναι επικεφαλίδα. Οι data rows ξεκινάνε από 1.
+      // Πόσες γραμμές δεδομένων έχει τώρα ο πίνακας; (Σύνολο - 1 για την επικεφαλίδα)
+      let currentDataRows = targetTable.getNumRows() - 1; 
+
+      // Βήμα Α: Αν ο πίνακας έχει λιγότερες γραμμές από τους μαθητές, ΠΡΟΣΘΕΤΟΥΜΕ.
+      while (currentDataRows < studentsCount) {
+        // Το appendRow αντιγράφει το στυλ της τελευταίας γραμμής
+        const newRow = targetTable.appendRow();
+        
+        // Αν το appendRow δεν δημιουργήσει σωστά τα κελιά (συμβαίνει σπάνια), τα φτιάχνουμε
+        // (Βεβαιωνόμαστε ότι έχουμε 5 κελιά όσα και η επικεφαλίδα)
+        while (newRow.getNumCells() < 5) {
+            newRow.appendCell();
+        }
+        currentDataRows++;
+      }
+
+      // Βήμα Β: Γεμίζουμε τα δεδομένα
+      studentsList.forEach((st, index) => {
+        // Η γραμμή που θα γράψουμε είναι το index + 1 (επειδή 0 = header)
+        const row = targetTable.getRow(index + 1);
+        
+        // Γράφουμε με ασφάλεια (ελέγχοντας αν υπάρχει το κελί)
+        safeSetText_(row, 0, String(index + 1));      // A/A
+        safeSetText_(row, 1, st.dika);               // ΔΙΚΑ
+        safeSetText_(row, 2, st.name);               // ΟΝΟΜΑ
+        safeSetText_(row, 3, st.surname);            // ΕΠΩΝΥΜΟ
+        safeSetText_(row, 4, st.birthDate);          // ΗΜ. ΓΕΝΝΗΣΗΣ
+      });
+
+      // Βήμα Γ: Αν περίσσεψαν κενές γραμμές στο τέλος, τις ΣΒΗΝΟΥΜΕ (Cleanup)
+      // Ξεκινάμε από κάτω προς τα πάνω για ασφάλεια
+      for (let i = targetTable.getNumRows() - 1; i > studentsCount; i--) {
+         targetTable.removeRow(i);
+      }
+    }
+
+    doc.saveAndClose();
+    // Σημαντική καθυστέρηση για να προλάβει το Drive να σώσει τις αλλαγές
+    Utilities.sleep(3000); 
+
+    // 3. Μετατροπή σε PDF
+    const pdfBlob = draftFile.getAs(MimeType.PDF);
+    const pdfFile = baseFolder.createFile(pdfBlob).setName(fileName + ".pdf");
+
+    // Διαγραφή προχείρου (ΜΟΝΟ αν πέτυχε η δημιουργία PDF)
+    if (typeof CLEAN_DRAFTS === 'undefined' || CLEAN_DRAFTS !== false) { 
+       draftFile.setTrashed(true);
+    }
+
+    logAction_("Συγκεντρωτικό PDF", `Δημιουργήθηκε: ${fileName}.pdf (${studentsList.length} μαθ.)`);
+
+  } catch (err) {
+    console.error(err);
+    SpreadsheetApp.getActive().toast("Σφάλμα Συγκεντρωτικού: " + err.message, "Error", 10);
+    logAction_("Σφάλμα Συγκεντρωτικού", err.message);
+    
+    // Αν υπάρχει το draft file αλλά απέτυχε το PDF, μην το σβήσεις για να δει ο χρήστης τι πήγε στραβά
+    if (draftFile) {
+        console.log("Το πρόχειρο αρχείο κρατήθηκε για έλεγχο: " + draftFile.getUrl());
+    }
+  }
+}
+
+// Βοηθητική συνάρτηση για ασφαλή εγγραφή σε κελί
+function safeSetText_(row, cellIndex, text) {
+  if (row.getNumCells() > cellIndex) {
+    const cell = row.getCell(cellIndex);
+    // Καθαρίζουμε τυχόν παλιό κείμενο και βάζουμε το νέο
+    cell.setText(text || "");
+    
+    // Προαιρετικά: Στοίχιση στο κέντρο για Α/Α (0), ΔΙΚΑ (1), Ημ.Γεν (4)
+    if (cellIndex === 0 || cellIndex === 1 || cellIndex === 4) {
+        if (cell.getNumChildren() > 0) {
+            cell.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+        }
+    }
+  }
+}
+
+// Βοηθητική (αν χρειαστεί στοίχιση, αλλιώς αγνοήστε την καθώς η νέα λογική setText αρκεί)
+function createCellText_(cell, center) {
+  cell.getChild(0).asParagraph().setAlignment(center ? DocumentApp.HorizontalAlignment.CENTER : DocumentApp.HorizontalAlignment.LEFT);
+}
+/* =======================  ΜΗΝΙΑΙΑ ΑΠΟΤΥΠΩΣΗ (SNAPSHOT)  ======================= */
+
+/**
+ * Καταγράφει τα δεδομένα από το φύλλο «Σύνοψη» στο φύλλο «Αποτύπωση».
+ * Ρύθμιση Trigger: DAILY (Κάθε μέρα) μεταξύ 23:00 - 00:00.
+ * Ο κώδικας ελέγχει μόνος του αν είναι η τελευταία μέρα του μήνα.
+ */
+function createMonthlySnapshot() {
+  // --- ΒΗΜΑ 0: ΕΛΕΓΧΟΣ ΤΕΛΕΥΤΑΙΑΣ ΗΜΕΡΑΣ ---
+  const now = new Date();
+  
+  // Δημιουργούμε μια ημερομηνία για το "Αύριο"
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+
+  // Αν το "Αύριο" είναι η 1η του μήνα, τότε "Σήμερα" είναι η τελευταία!
+  // Αν το "Αύριο" ΔΕΝ είναι 1, τότε δεν είμαστε στο τέλος του μήνα, άρα σταματάμε.
+  if (tomorrow.getDate() !== 1) {
+    // console.log("Δεν είναι η τελευταία μέρα του μήνα. Παράλειψη.");
+    return; 
+  }
+  // ------------------------------------------
+
+  const ss = SpreadsheetApp.getActive();
+  const sourceSheet = ss.getSheetByName("Σύνοψη");
+  let targetSheet = ss.getSheetByName("Αποτύπωση");
+
+  if (!sourceSheet) {
+    logAction_("Σφάλμα Snapshot", "Δεν βρέθηκε το φύλλο «Σύνοψη».");
+    return;
+  }
+
+  // Δημιουργία φύλλου αν δεν υπάρχει
+  if (!targetSheet) {
+    targetSheet = ss.insertSheet("Αποτύπωση");
+    const schools = sourceSheet.getRange("A2:A20").getValues();
+    targetSheet.getRange(2, 1, schools.length, 1).setValues(schools);
+    targetSheet.getRange(1, 1).setValue("Σχολεία / Μήνες");
+  }
+
+  const lastCol = targetSheet.getLastColumn();
+  const newCol = lastCol + 1;
+
+  // Μορφοποίηση ημερομηνίας (Ελληνικά)
+  const greekMonth = getGreekMonthName_(now);
+
+  const dataRange = sourceSheet.getRange("A2:B10"); 
+  const values = dataRange.getValues();
+
+  // Εγγραφή
+  targetSheet.getRange(1, newCol).setValue(greekMonth).setFontWeight("bold").setHorizontalAlignment("center");
+  targetSheet.getRange(2, newCol, values.length, 1).setValues(values);
+  targetSheet.autoResizeColumn(newCol);
+
+  logAction_("Μηνιαία Αποτύπωση", `Ολοκληρώθηκε για: ${greekMonth}`);
+}
+
+/** Βοηθητική για Ελληνικούς Μήνες */
+function getGreekMonthName_(date) {
+  const months = [
+    "Ιανουάριος", "Φεβρουάριος", "Μάρτιος", "Απρίλιος", "Μάιος", "Ιούνιος",
+    "Ιούλιος", "Αύγουστος", "Σεπτέμβριος", "Οκτώβριος", "Νοέμβριος", "Δεκέμβριος"
+  ];
+  const mIndex = date.getMonth(); 
+  const year = date.getFullYear();
+  return `${months[mIndex]} ${year}`;
+}
