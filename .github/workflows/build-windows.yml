@@ -65,7 +65,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.RELEASES_GITHUB_TOKEN }}
           repository: katsanx/mathitologio-releases
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           make_latest: true
           body: |
             Έκδοση ${{ github.ref_name }}.
@@ -73,8 +76,6 @@ jobs:
             release/*.exe
             release/*.exe.blockmap
             release/latest.yml
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
 
       # Γέφυρα για παλιές εγκαταστάσεις που ακόμα διαβάζουν το feed του code repo.
       # Χρειάζεται όσο υπάρχουν χρήστες πριν την αλλαγή updater → mathitologio-releases
@@ -84,6 +85,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           make_latest: true
           body: |
             Έκδοση ${{ github.ref_name }} (legacy update feed).
