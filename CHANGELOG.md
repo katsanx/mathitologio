@@ -5,6 +5,11 @@
 Η μορφή ακολουθεί το [Keep a Changelog](https://keepachangelog.com/el/1.1.0/),
 και οι εκδόσεις το [Semantic Versioning](https://semver.org/lang/el/).
 
+## [2.19.2] — 2026-10-10
+
+### Αλλαγές
+- Αυτόματες ενημερώσεις από το δημόσιο `katsanx/mathitologio-releases` (γέφυρα προς private κώδικα).
+
 ## [2.19.1] — 2026-10-10
 
 ### Αλλαγές

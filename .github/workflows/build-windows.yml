@@ -59,15 +59,34 @@ jobs:
       # ΣΗΜ.: Δεν ανεβάζουμε το installer ως Actions artifact (περιττό ~310 MB, γεμίζει το quota):
       # αποθηκεύεται ως GitHub Release asset ΚΑΙ στο Google Drive.
 
-      # Σε tag (π.χ. v2.0.0) δημιουργεί ΔΗΜΟΣΙΟ GitHub Release με installer + latest.yml + blockmap.
-      # Όλες οι ενημερώσεις είναι σιωπηλές (κατεβαίνουν αυτόματα, εγκατάσταση στο κλείσιμο).
-      - name: Create GitHub Release
+      # Δημόσιο feed ενημερώσεων (μόνο assets). Απαιτεί secret RELEASES_GITHUB_TOKEN
+      # με Contents: write στο mathitologio-releases.
+      - name: Create GitHub Release (mathitologio-releases)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: katsanx/mathitologio-releases
+          make_latest: true
+          body: |
+            Έκδοση ${{ github.ref_name }}.
+          files: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+
+      # Γέφυρα για παλιές εγκαταστάσεις που ακόμα διαβάζουν το feed του code repo.
+      # Χρειάζεται όσο υπάρχουν χρήστες πριν την αλλαγή updater → mathitologio-releases
+      # (και όσο το mathitologio είναι δημόσιο). Μετά το Make private το βήμα μπορεί να μείνει·
+      # τα assets εδώ δεν είναι πια δημόσια αναγνώσιμα.
+      - name: Create GitHub Release (legacy feed mathitologio)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           make_latest: true
           body: |
-            Έκδοση ${{ github.ref_name }}.
+            Έκδοση ${{ github.ref_name }} (legacy update feed).
           files: |
             release/*.exe
             release/*.exe.blockmap

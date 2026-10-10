@@ -6,8 +6,9 @@
 // Κάθε νέο release κατεβαίνει αυτόματα στο παρασκήνιο και εγκαθίσταται (με επανεκκίνηση) όταν
 // ο χρήστης κλείσει την εφαρμογή. Δεν υπάρχει πια κουμπί «Λήψη» / σημαντικές ενημερώσεις.
 //
-// Το repo είναι ΔΗΜΟΣΙΟ: τα releases διαβάζονται χωρίς token (δεν ενσωματώνεται μυστικό στην
-// εφαρμογή). Σε dev ο updater μένει ανενεργός.
+// Το feed ενημερώσεων είναι το ΔΗΜΟΣΙΟ repo `katsanx/mathitologio-releases` (μόνο assets).
+// Ο πηγαίος κώδικας μπορεί να είναι private στο `katsanx/mathitologio`. Δεν ενσωματώνεται
+// μυστικό στην εφαρμογή. Σε dev ο updater μένει ανενεργός.
 // ---------------------------------------------------------------------------
 
 const { autoUpdater } = require('electron-updater')
@@ -29,7 +30,7 @@ try {
 const isDev = !!process.env.VITE_DEV_SERVER_URL
 
 const OWNER = 'katsanx'
-const REPO = 'mathitologio'
+const REPO = 'mathitologio-releases'
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000 // ~6 ώρες
 
 let getWin = () => null
@@ -115,14 +116,14 @@ function init(winGetter) {
   started = true
 
   autoUpdater.logger = log
-  log.info('updater: init — public repo, χωρίς token, ενεργός')
+  log.info(`updater: init — feed ${OWNER}/${REPO} (public assets), χωρίς token, ενεργός`)
   autoUpdater.autoDownload = false
   // ΟΧΙ autoInstallOnAppQuit: τη σιωπηλή εγκατάσταση στο κλείσιμο την κάνουμε εμείς ΜΕ
   // επανεκκίνηση (before-quit hook → quitAndInstall), ώστε ο χρήστης να μη χρειάζεται να ανοίξει
   // χειροκίνητα την εφαρμογή μέσα στο παράθυρο εγκατάστασης (race → «ffmpeg.dll δεν βρέθηκε»).
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.allowPrerelease = false // stable: μόνο κανονικά releases
-  // Το differential (delta) download παραμένει ΕΝΕΡΓΟ: σε public repo δουλεύει σωστά, ώστε οι
+  // Το differential (delta) download παραμένει ΕΝΕΡΓΟ: το feed είναι δημόσιο, ώστε οι
   // ενημερώσεις να μεταφέρουν μόνο το delta κώδικα (το ~300MB LibreOffice δεν ξανακατεβαίνει).
   try {
     autoUpdater.setFeedURL({ provider: 'github', owner: OWNER, repo: REPO, private: false })
